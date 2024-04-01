@@ -110,4 +110,3 @@ Contributions to the ArmTrailRenderer project are welcome! Please submit bug rep
 
 This project is released under the [MIT License](LICENSE).
 
-
