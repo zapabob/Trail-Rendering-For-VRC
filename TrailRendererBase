@@ -1,4 +1,5 @@
 // TrailRendererBase.cs
+using System;
 using UnityEngine;
 using VRC.SDK3.Avatars.Components;
 using VRC.SDK3.Avatars.ScriptableObjects;
@@ -24,40 +25,55 @@ public abstract class TrailRendererBase : MonoBehaviour
 
     protected virtual void SetupComponents()
     {
-        animator = GetComponentInParent<Animator>();
-        if (animator == null)
+        try
         {
-            throw new InvalidOperationException("Animator component not found on the avatar.");
-        }
+            animator = GetComponentInParent<Animator>();
+            if (animator == null)
+            {
+                throw new InvalidOperationException("Animator component not found on the avatar.");
+            }
 
-        if (expressionParameters == null)
-        {
-            throw new InvalidOperationException("VRCExpressionParameters not assigned.");
-        }
+            if (expressionParameters == null)
+            {
+                throw new InvalidOperationException("VRCExpressionParameters not assigned.");
+            }
 
-        if (avatarDescriptor == null)
-        {
-            throw new InvalidOperationException("VRCAvatarDescriptor not assigned.");
-        }
+            if (avatarDescriptor == null)
+            {
+                throw new InvalidOperationException("VRCAvatarDescriptor not assigned.");
+            }
 
-        for (int i = 0; i < boneNames.Length; i++)
+            for (int i = 0; i < boneNames.Length; i++)
+            {
+                SetupLineRenderer(lineRenderers[i], boneNames[i]);
+            }
+        }
+        catch (Exception e)
         {
-            SetupLineRenderer(lineRenderers[i], boneNames[i]);
+            LogError($"Error setting up components: {e.Message}");
+            enabled = false;
         }
     }
 
     protected virtual void SetupLineRenderer(LineRenderer lineRenderer, string boneName)
     {
-        if (lineRenderer == null)
+        try
         {
-            lineRenderer = GetLineRendererForBone(boneName);
             if (lineRenderer == null)
             {
-                throw new InvalidOperationException($"LineRenderer not found for bone '{boneName}'.");
+                lineRenderer = GetLineRendererForBone(boneName);
+                if (lineRenderer == null)
+                {
+                    throw new InvalidOperationException($"LineRenderer not found for bone '{boneName}'.");
+                }
             }
-        }
 
-        lineRenderer.material = new Material(Shader.Find("Unlit/Color"));
+            lineRenderer.material = new Material(Shader.Find("Unlit/Color"));
+        }
+        catch (Exception e)
+        {
+            LogError($"Error setting up line renderer for bone '{boneName}': {e.Message}");
+        }
     }
 
     protected virtual LineRenderer GetLineRendererForBone(string boneName)
@@ -71,6 +87,33 @@ public abstract class TrailRendererBase : MonoBehaviour
         return boneTransform.GetComponentInChildren<LineRenderer>();
     }
 
+    protected virtual void Update()
+    {
+        if (!enabled) return;
+
+        try
+        {
+            for (int i = 0; i < boneNames.Length; i++)
+            {
+                UpdateTrail(lineRenderers[i], boneNames[i]);
+            }
+
+            if (UnityEngine.Random.value < 0.01f)
+            {
+                UpdateTrailParameters();
+            }
+        }
+        catch (Exception e)
+        {
+            LogError($"Error updating trail renderer: {e.Message}");
+        }
+    }
+
     protected abstract void UpdateTrail(LineRenderer lineRenderer, string boneName);
     protected abstract void UpdateTrailParameters();
+
+    protected virtual void LogError(string message)
+    {
+        Debug.LogError($"[TrailRendererBase] {message}");
+    }
 }
