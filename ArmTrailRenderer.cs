@@ -1,5 +1,7 @@
 using System;
 using UnityEngine;
+using VRC.SDK3.Avatars.Components;
+using VRC.SDK3.Avatars.ScriptableObjects;
 using Random = UnityEngine.Random;
 
 public class ArmTrailRenderer : MonoBehaviour
@@ -19,6 +21,8 @@ public class ArmTrailRenderer : MonoBehaviour
     [SerializeField] private float trailDurationMultiplier = 1f;
     [SerializeField] private float trailWidthMultiplier = 1f;
     [SerializeField] private float fftSizeMultiplier = 1f;
+    [SerializeField] private VRCExpressionParameters expressionParameters;
+    [SerializeField] private VRCAvatarDescriptor avatarDescriptor;
 
     private Animator animator;
     private AudioSource audioSource;
@@ -26,23 +30,64 @@ public class ArmTrailRenderer : MonoBehaviour
 
     private void Start()
     {
-        SetupComponents();
-        SetupAudio();
-        SetupFFTSpectrum();
+        try
+        {
+            SetupComponents();
+            SetupAudio();
+            SetupFFTSpectrum();
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"Error setting up ArmTrailRenderer: {e.Message}");
+            enabled = false;
+        }
     }
 
     private void SetupComponents()
     {
-        animator = GetComponentInChildren<Animator>();
+        animator = GetComponentInParent<Animator>();
         if (animator == null)
         {
-            Debug.LogError("Animator component not found. Please make sure the script is attached to the avatar prefab.");
-            enabled = false;
-            return;
+            throw new InvalidOperationException("Animator component not found on the avatar.");
         }
 
-        SetupLineRendererMaterial(leftLineRenderer);
-        SetupLineRendererMaterial(rightLineRenderer);
+        if (expressionParameters == null)
+        {
+            throw new InvalidOperationException("VRCExpressionParameters not assigned.");
+        }
+
+        if (avatarDescriptor == null)
+        {
+            throw new InvalidOperationException("VRCAvatarDescriptor not assigned.");
+        }
+
+        SetupLineRenderer(leftLineRenderer, HumanBodyBones.LeftHand);
+        SetupLineRenderer(rightLineRenderer, HumanBodyBones.RightHand);
+    }
+
+    private void SetupLineRenderer(LineRenderer lineRenderer, HumanBodyBones bone)
+    {
+        if (lineRenderer == null)
+        {
+            lineRenderer = GetLineRendererForBone(bone);
+            if (lineRenderer == null)
+            {
+                throw new InvalidOperationException($"LineRenderer not found for {bone}.");
+            }
+        }
+
+        lineRenderer.material = new Material(Shader.Find("Unlit/Color"));
+    }
+
+    private LineRenderer GetLineRendererForBone(HumanBodyBones bone)
+    {
+        var boneTransform = animator.GetBoneTransform(bone);
+        if (boneTransform == null)
+        {
+            throw new InvalidOperationException($"Bone transform not found for {bone}.");
+        }
+
+        return boneTransform.GetComponentInChildren<LineRenderer>();
     }
 
     private void SetupAudio()
@@ -63,16 +108,23 @@ public class ArmTrailRenderer : MonoBehaviour
     {
         if (!enabled) return;
 
-        UpdateTrail(leftLineRenderer, HumanBodyBones.LeftHand);
-        UpdateTrail(rightLineRenderer, HumanBodyBones.RightHand);
-
-        if (Random.value < 0.01f)
+        try
         {
-            UpdateTrailParameters();
-        }
+            UpdateTrail(leftLineRenderer, HumanBodyBones.LeftHand);
+            UpdateTrail(rightLineRenderer, HumanBodyBones.RightHand);
 
-        UpdateBeamSaberSound();
-        ProcessAudioSpectrum();
+            if (Random.value < 0.01f)
+            {
+                UpdateTrailParameters();
+            }
+
+            UpdateBeamSaberSound();
+            ProcessAudioSpectrum();
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"Error updating ArmTrailRenderer: {e.Message}");
+        }
     }
 
     private void UpdateTrail(LineRenderer lineRenderer, HumanBodyBones bone)
@@ -96,7 +148,11 @@ public class ArmTrailRenderer : MonoBehaviour
 
     private Vector3 GetBonePosition(HumanBodyBones bone)
     {
-        var boneTransform = animator.GetBoneTransform(bone) ?? throw new Exception($"Bone transform not found for {bone}.");
+        var boneTransform = animator.GetBoneTransform(bone);
+        if (boneTransform == null)
+        {
+            throw new InvalidOperationException($"Bone transform not found for {bone}.");
+        }
         return boneTransform.position;
     }
 
@@ -227,14 +283,6 @@ public class ArmTrailRenderer : MonoBehaviour
         return spectrumSum / fftSpectrum.Length;
     }
 
-    private void SetupLineRendererMaterial(LineRenderer lineRenderer)
-    {
-        if (lineRenderer != null)
-        {
-            lineRenderer.material = new Material(Shader.Find("Unlit/Color"));
-        }
-    }
-
     private float BayesianOptimization(float min, float max, float t)
     {
         return Mathf.Lerp(min, max, Mathf.PerlinNoise(t, 0f));
@@ -257,21 +305,78 @@ public class ArmTrailRenderer : MonoBehaviour
 
     public void SetHueOffset(float value)
     {
-        PlayerPrefs.SetFloat("HueOffset", Mathf.Clamp01(value));
+        SetAvatarParameterValue("ArmTrailRendererHueOffset", Mathf.Clamp01(value));
     }
 
     private float GetHueOffset()
     {
-        return PlayerPrefs.GetFloat("HueOffset", 0f);
+        return GetAvatarParameterValue("ArmTrailRendererHueOffset");
     }
 
     public void SetColorVariation(float value)
     {
-        PlayerPrefs.SetFloat("ColorVariation", Mathf.Clamp01(value));
+        SetAvatarParameterValue("ArmTrailRendererColorVariation", Mathf.Clamp01(value));
     }
 
     private float GetColorVariation()
     {
-        return PlayerPrefs.GetFloat("ColorVariation", 0f);
+        return GetAvatarParameterValue("ArmTrailRendererColorVariation");
+    }
+
+    private void SetAvatarParameterValue(string parameterName, float value)
+    {
+        if (expressionParameters != null)
+        {
+            var parameter = expressionParameters.FindParameter(parameterName);
+            if (parameter != null)
+            {
+                parameter.valueFloat = value;
+            }
+        }
+    }
+
+    private float GetAvatarParameterValue(string parameterName)
+    {
+        if (expressionParameters != null)
+        {
+            var parameter = expressionParameters.FindParameter(parameterName);
+            if (parameter != null)
+            {
+                return parameter.valueFloat;
+            }
+        }
+        return 0f;
+    }
+
+    public void OnArmTrailToggle(bool isOn)
+    {
+        try
+        {
+            ToggleArmTrail(isOn);
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"Error toggling arm trail: {e.Message}");
+        }
+    }
+
+    private void ToggleArmTrail(bool isOn)
+    {
+        enabled = isOn;
+
+        if (leftLineRenderer != null)
+        {
+            leftLineRenderer.enabled = isOn;
+        }
+
+        if (rightLineRenderer != null)
+        {
+            rightLineRenderer.enabled = isOn;
+        }
+
+        if (!isOn && audioSource != null && audioSource.isPlaying)
+        {
+            audioSource.Stop();
+        }
     }
 }
