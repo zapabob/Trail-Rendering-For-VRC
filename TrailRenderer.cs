@@ -278,8 +278,8 @@ public class TrailRenderer : MonoBehaviour
             return 0f;
         }
 
-        VRCExpressionParameters.Parameter parameter = expressionParameters.FindParameter(parameterName);
-        return parameter != null ? parameter.valueFloat : 0f;
+              VRCExpressionParameters.Parameter parameter = expressionParameters.FindParameter(parameterName);
+        return (float)(parameter != null ? parameter.valueType : 0f);
     }
 
     private void SetExpressionParameterValue(string parameterName, float value)
@@ -292,10 +292,7 @@ public class TrailRenderer : MonoBehaviour
         VRCExpressionParameters.Parameter parameter = expressionParameters.FindParameter(parameterName);
         if (parameter != null)
         {
-            parameter.valueFloat = Mathf.Clamp01(value);
-        }
-    }
-
+            parameter.valueType = (VRCExpressionParameters.ValueType)Mathf.Clamp01(value);
     private void LogError(string message)
     {
         Debug.LogError($"[TrailRenderer] {message}");
