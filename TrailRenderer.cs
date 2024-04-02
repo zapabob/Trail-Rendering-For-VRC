@@ -1,9 +1,16 @@
-// TrailRenderer.cs
 using System;
 using UnityEngine;
+using VRC.SDK3.Avatars.Components;
+using VRC.SDK3.Avatars.ScriptableObjects;
 
-public class TrailRenderer : TrailRendererBase
+public class TrailRenderer : MonoBehaviour
 {
+    [SerializeField] private LineRenderer[] lineRenderers;
+    [SerializeField] private float minTrailDuration = 0.3f;
+    [SerializeField] private float maxTrailDuration = 0.7f;
+    [SerializeField] private float minTrailWidth = 0.005f;
+    [SerializeField] private float maxTrailWidth = 0.015f;
+    [SerializeField] private Gradient defaultTrailColorGradient;
     [SerializeField] private AudioClip trailSound;
     [SerializeField] private float minPitch = 0.8f;
     [SerializeField] private float maxPitch = 1.2f;
@@ -12,23 +19,82 @@ public class TrailRenderer : TrailRendererBase
     [SerializeField] private float trailDurationMultiplier = 1f;
     [SerializeField] private float trailWidthMultiplier = 1f;
     [SerializeField] private float fftSizeMultiplier = 1f;
+    [SerializeField] private VRCExpressionParameters expressionParameters;
+    [SerializeField] private VRCAvatarDescriptor avatarDescriptor;
+    [SerializeField] private string[] boneNames;
 
+    private Animator animator;
     private AudioSource audioSource;
     private float[] fftSpectrum;
 
-    protected override void Start()
+    private void Start()
     {
         try
         {
-            base.Start();
+            SetupComponents();
             SetupAudio();
             SetupFFTSpectrum();
         }
-        catch (Exception e)
+        catch (Exception ex)
         {
-            LogError($"Error setting up trail renderer: {e.Message}");
+            LogError($"Failed to setup TrailRenderer: {ex.Message}");
             enabled = false;
         }
+    }
+
+    private void SetupComponents()
+    {
+        animator = GetComponentInParent<Animator>();
+        if (animator == null)
+        {
+            throw new InvalidOperationException("Animator component not found on the avatar.");
+        }
+
+        if (expressionParameters == null)
+        {
+            throw new InvalidOperationException("VRCExpressionParameters is not assigned.");
+        }
+
+        if (avatarDescriptor == null)
+        {
+            throw new InvalidOperationException("VRCAvatarDescriptor is not assigned.");
+        }
+
+        foreach (string boneName in boneNames)
+        {
+            SetupLineRenderer(boneName);
+        }
+    }
+
+    private void SetupLineRenderer(string boneName)
+    {
+        LineRenderer lineRenderer = GetLineRendererForBone(boneName);
+        if (lineRenderer == null)
+        {
+            LogWarning($"LineRenderer not found for bone: {boneName}");
+            return;
+        }
+
+        // Apply lighting settings for Poiyomi/lilToon shaders
+        Shader shader = Shader.Find("Poiyomi/Toon") ?? Shader.Find("lilToon");
+        if (shader != null)
+        {
+            lineRenderer.material.shader = shader;
+            lineRenderer.material.SetFloat("_ShadowReceive", 1f);
+            lineRenderer.material.SetFloat("_ShadowStrength", 0.5f);
+            lineRenderer.material.SetFloat("_LightColorAttenuation", 0.8f);
+            lineRenderer.material.SetFloat("_IndirectLightIntensity", 0.8f);
+        }
+        else
+        {
+            LogWarning("Poiyomi/lilToon shader not found. Using default shader.");
+        }
+    }
+
+    private LineRenderer GetLineRendererForBone(string boneName)
+    {
+        Transform boneTransform = animator.GetBoneTransform(HumanBodyBones.Hips)?.Find(boneName);
+        return boneTransform != null ? boneTransform.GetComponentInChildren<LineRenderer>() : null;
     }
 
     private void SetupAudio()
@@ -45,50 +111,57 @@ public class TrailRenderer : TrailRendererBase
         fftSpectrum = new float[fftSize];
     }
 
-    protected override void UpdateTrail(LineRenderer lineRenderer, string boneName)
+    private void Update()
     {
+        if (!enabled)
+        {
+            return;
+        }
+
         try
         {
-            base.UpdateTrail(lineRenderer, boneName);
+            foreach (string boneName in boneNames)
+            {
+                UpdateTrail(boneName);
+            }
 
-            if (lineRenderer == null) return;
+            if (UnityEngine.Random.value < 0.01f)
+            {
+                UpdateTrailParameters();
+            }
 
-            Vector3 bonePosition = GetBonePosition(boneName);
-            int maxPoints = CalculateMaxTrailPoints();
-            UpdateLineRendererPositions(lineRenderer, bonePosition, maxPoints);
+            UpdateAudio();
+            ProcessAudioSpectrum();
         }
-        catch (Exception e)
+        catch (Exception ex)
         {
-            LogError($"Error updating trail for bone '{boneName}': {e.Message}");
+            LogError($"An error occurred during TrailRenderer update: {ex.Message}");
         }
     }
 
-    protected override void UpdateTrailParameters()
+    private void UpdateTrail(string boneName)
     {
-        float trailWidth = BayesianOptimization(minTrailWidth, maxTrailWidth, Time.time * 0.1f) * trailWidthMultiplier;
-        fftSize = Mathf.RoundToInt(fftSize * fftSizeMultiplier);
-
-        foreach (var lineRenderer in lineRenderers)
+        LineRenderer lineRenderer = GetLineRendererForBone(boneName);
+        if (lineRenderer == null)
         {
-            SetLineRendererWidth(lineRenderer, trailWidth);
-            SetLineRendererColorGradient(lineRenderer);
+            return;
         }
+
+        Vector3 bonePosition = GetBonePosition(boneName);
+        int maxPoints = CalculateMaxTrailPoints();
+        UpdateLineRendererPositions(lineRenderer, bonePosition, maxPoints);
     }
 
     private Vector3 GetBonePosition(string boneName)
     {
-        var boneTransform = animator.GetBoneTransform(HumanBodyBones.Hips).Find(boneName);
-        if (boneTransform == null)
-        {
-            throw new InvalidOperationException($"Bone '{boneName}' not found.");
-        }
-        return boneTransform.position;
+        Transform boneTransform = animator.GetBoneTransform(HumanBodyBones.Hips)?.Find(boneName);
+        return boneTransform != null ? boneTransform.position : Vector3.zero;
     }
 
     private int CalculateMaxTrailPoints()
     {
-        float trailDuration = BayesianOptimization(minTrailDuration, maxTrailDuration, Time.time * 0.1f) * trailDurationMultiplier;
-        return Mathf.CeilToInt(trailDuration * 60f);
+        float trailDuration = Mathf.Lerp(minTrailDuration, maxTrailDuration, Mathf.PerlinNoise(Time.time * 0.1f, 0f));
+        return Mathf.CeilToInt(trailDuration * trailDurationMultiplier * 60f);
     }
 
     private void UpdateLineRendererPositions(LineRenderer lineRenderer, Vector3 bonePosition, int maxPoints)
@@ -106,20 +179,24 @@ public class TrailRenderer : TrailRendererBase
         }
     }
 
-    private void SetLineRendererWidth(LineRenderer lineRenderer, float width)
+    private void UpdateTrailParameters()
     {
-        if (lineRenderer != null)
-        {
-            lineRenderer.startWidth = width;
-            lineRenderer.endWidth = width;
-        }
-    }
+        float trailWidth = Mathf.Lerp(minTrailWidth, maxTrailWidth, Mathf.PerlinNoise(Time.time * 0.1f, 0f));
 
-    private void SetLineRendererColorGradient(LineRenderer lineRenderer)
-    {
-        if (lineRenderer != null)
+        foreach (LineRenderer lineRenderer in lineRenderers)
         {
-            lineRenderer.colorGradient = GetCurrentColorGradient();
+            if (lineRenderer != null)
+            {
+                lineRenderer.startWidth = trailWidth * trailWidthMultiplier;
+                lineRenderer.endWidth = trailWidth * trailWidthMultiplier;
+                lineRenderer.colorGradient = GetCurrentColorGradient();
+            }
+        }
+
+        fftSize = Mathf.RoundToInt(fftSize * fftSizeMultiplier);
+        if (fftSpectrum == null || fftSpectrum.Length != fftSize)
+        {
+            fftSpectrum = new float[fftSize];
         }
     }
 
@@ -128,44 +205,35 @@ public class TrailRenderer : TrailRendererBase
         Gradient gradient = new Gradient();
         gradient.SetKeys(defaultTrailColorGradient.colorKeys, defaultTrailColorGradient.alphaKeys);
 
-        float hue = (GetHueOffset() + UnityEngine.Random.Range(-GetColorVariation(), GetColorVariation())) % 1f;
+        float hueOffset = GetExpressionParameterValue("TrailRendererHueOffset");
+        float colorVariation = GetExpressionParameterValue("TrailRendererColorVariation");
+        float hue = (hueOffset + UnityEngine.Random.Range(-colorVariation, colorVariation)) % 1f;
         Color color = Color.HSVToRGB(hue, 1f, 1f);
 
-        GradientColorKey[] colorKeys =
-        {
-            new GradientColorKey(color, 0f),
-            new GradientColorKey(color, 1f)
-        };
+        GradientColorKey[] colorKeys = { new GradientColorKey(color, 0f), new GradientColorKey(color, 1f) };
         gradient.SetKeys(colorKeys, gradient.alphaKeys);
 
         return gradient;
     }
 
-    private void UpdateTrailSound()
+    private void UpdateAudio()
     {
-        try
+        if (!audioSource.isPlaying)
         {
-            if (!audioSource.isPlaying)
-            {
-                audioSource.Play();
-            }
+            audioSource.Play();
+        }
 
-            float velocity = CalculateVelocity();
-            float normalizedVelocity = NormalizeVelocity(velocity);
-            float pitch = BayesianOptimization(minPitch, maxPitch, normalizedVelocity);
-            audioSource.pitch = pitch;
-        }
-        catch (Exception e)
-        {
-            LogError($"Error updating trail sound: {e.Message}");
-        }
+        float armVelocity = CalculateArmVelocity();
+        float normalizedVelocity = NormalizeVelocity(armVelocity);
+        float pitch = Mathf.Lerp(minPitch, maxPitch, normalizedVelocity);
+        audioSource.pitch = pitch;
     }
 
-    private float CalculateVelocity()
+    private float CalculateArmVelocity()
     {
-        Vector3 hipPosition = GetBonePosition("Hips");
-        Vector3 chestPosition = GetBonePosition("Chest");
-        return (chestPosition - hipPosition).magnitude;
+        Vector3 rightHand = GetBonePosition("RightHand");
+        Vector3 rightLowerArm = GetBonePosition("RightLowerArm");
+        return Vector3.Distance(rightHand, rightLowerArm);
     }
 
     private float NormalizeVelocity(float velocity)
@@ -181,87 +249,60 @@ public class TrailRenderer : TrailRendererBase
         if (normalizedSpectrum > noiseThreshold)
         {
             float hue = Mathf.Lerp(0f, 1f, normalizedSpectrum);
-            SetHueOffset(hue);
+            SetExpressionParameterValue("TrailRendererHueOffset", hue);
 
-            float colorVariation = BayesianOptimization(0f, 1f, normalizedSpectrum);
-            SetColorVariation(colorVariation);
+            float colorVariation = Mathf.Lerp(0f, 1f, Mathf.PerlinNoise(Time.time * 0.1f, normalizedSpectrum));
+            SetExpressionParameterValue("TrailRendererColorVariation", colorVariation);
         }
     }
 
     private float CalculateNormalizedSpectrum()
     {
-        float spectrumSum = 0f;
-        foreach (float sample in fftSpectrum)
+        if (fftSpectrum == null || fftSpectrum.Length == 0)
         {
-            spectrumSum += sample;
+            return 0f;
         }
-        return spectrumSum / fftSpectrum.Length;
-    }
 
-    protected virtual void UpdateExtraEffects()
-    {
-        UpdateTrailSound();
-        ProcessAudioSpectrum();
-    }
-
-    protected override void Update()
-    {
-        base.Update();
-        UpdateExtraEffects();
-    }
-
-    private float BayesianOptimization(float min, float max, float t)
-    {
-        return Mathf.Lerp(min, max, Mathf.PerlinNoise(t, 0f));
-    }
-
-    private void SetHueOffset(float value)
-    {
-        SetAvatarParameterValue("TrailRendererHueOffset", Mathf.Clamp01(value));
-    }
-
-    private float GetHueOffset()
-    {
-        return GetAvatarParameterValue("TrailRendererHueOffset");
-    }
-
-    private void SetColorVariation(float value)
-    {
-        SetAvatarParameterValue("TrailRendererColorVariation", Mathf.Clamp01(value));
-    }
-
-    private float GetColorVariation()
-    {
-        return GetAvatarParameterValue("TrailRendererColorVariation");
-    }
-
-    private void SetAvatarParameterValue(string parameterName, float value)
-    {
-        if (expressionParameters != null)
+        float sum = 0f;
+        for (int i = 0; i < fftSpectrum.Length; i++)
         {
-            var parameter = expressionParameters.FindParameter(parameterName);
-            if (parameter != null)
-            {
-                parameter.valueFloat = value;
-            }
+            sum += fftSpectrum[i];
+        }
+        return sum / fftSpectrum.Length;
+    }
+
+    private float GetExpressionParameterValue(string parameterName)
+    {
+        if (expressionParameters == null)
+        {
+            return 0f;
+        }
+
+        VRCExpressionParameters.Parameter parameter = expressionParameters.FindParameter(parameterName);
+        return parameter != null ? parameter.valueFloat : 0f;
+    }
+
+    private void SetExpressionParameterValue(string parameterName, float value)
+    {
+        if (expressionParameters == null)
+        {
+            return;
+        }
+
+        VRCExpressionParameters.Parameter parameter = expressionParameters.FindParameter(parameterName);
+        if (parameter != null)
+        {
+            parameter.valueFloat = Mathf.Clamp01(value);
         }
     }
 
-    private float GetAvatarParameterValue(string parameterName)
-    {
-        if (expressionParameters != null)
-        {
-            var parameter = expressionParameters.FindParameter(parameterName);
-            if (parameter != null)
-            {
-                return parameter.valueFloat;
-            }
-        }
-        return 0f;
-    }
-
-    protected override void LogError(string message)
+    private void LogError(string message)
     {
         Debug.LogError($"[TrailRenderer] {message}");
+    }
+
+    private void LogWarning(string message)
+    {
+        Debug.LogWarning($"[TrailRenderer] {message}");
     }
 }
